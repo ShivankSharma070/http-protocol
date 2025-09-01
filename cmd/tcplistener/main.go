@@ -43,6 +43,7 @@ func getLinesChannel(f io.ReadCloser) <-chan string {
 }
 
 func main() {
+	// Start a tcp connection
 	listener, err := net.Listen("tcp", ":42069")
 	if err != nil {
 		log.Fatal("erorr", "error", err)
