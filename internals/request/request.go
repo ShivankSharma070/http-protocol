@@ -1,10 +1,18 @@
 package request
 
 import (
-	"errors"
+	"bytes"
 	"fmt"
 	"io"
 	"strings"
+)
+
+type parserState string
+
+const (
+	StateInit  parserState = "init"
+	StateDone  parserState = "done"
+	StateError parserState = "error"
 )
 
 type RequestLine struct {
@@ -14,7 +22,6 @@ type RequestLine struct {
 }
 
 func (re *RequestLine) verifyRequestLine() error {
-
 	if !(re.Method == "GET" || re.Method == "POST" || re.Method == "DELETE" || re.Method == "PUT") {
 		return ERROR_UNSUPPORTED_METHOD
 	}
@@ -30,55 +37,102 @@ func (re *RequestLine) verifyRequestLine() error {
 
 type Request struct {
 	RequestLine RequestLine
+	State       parserState
+}
+
+func (r *Request) parse(data []byte) (int, error) {
+	read := 0
+outer:
+	for {
+		switch r.State {
+		case StateError:
+			return 0, ERROR_REQUEST_IN_ERROR_STATE
+		case StateInit:
+			re, n, err := parseRequestLine(data[read:])
+			if err != nil {
+				r.State = StateError
+				return 0, err
+			}
+			if n == 0 {
+				break outer
+			}
+			r.RequestLine = *re
+			read += n
+
+			r.State = StateDone
+
+		case StateDone:
+			break outer
+		}
+	}
+	return read, nil
+}
+
+func (re *Request) done() bool {
+	return re.State == StateDone
+}
+
+func newRequest() *Request {
+	return &Request{
+		State: StateInit,
+	}
 }
 
 var ERROR_MALFORMED_REQUEST_LINE = fmt.Errorf("Malformed Request-Line")
 var ERROR_UNSUPPORTED_HTTP_VERSION = fmt.Errorf("Unsupported http version")
 var ERROR_UNSUPPORTED_METHOD = fmt.Errorf("Unsupported method type")
-var SEPERATOR = "\r\n"
+var ERROR_REQUEST_IN_ERROR_STATE = fmt.Errorf("Request in Error state")
+var SEPERATOR = []byte("\r\n")
 
-func parseRequestLine(b string) (*RequestLine, string, error) {
-	idx := strings.Index(b, SEPERATOR)
+func parseRequestLine(b []byte) (*RequestLine, int, error) {
+	idx := bytes.Index(b, SEPERATOR)
 	if idx == -1 {
-		return nil, b, nil
+		return nil, 0, nil
 	}
 
 	startMsg := b[:idx]
-	restMsg := b[idx+len(SEPERATOR):]
-	parts := strings.Split(startMsg, " ")
+	noOfBytesParsed := idx + len(SEPERATOR)
+	parts := bytes.Split(startMsg, []byte(" "))
 
 	if len(parts) != 3 {
-		return nil, restMsg, ERROR_MALFORMED_REQUEST_LINE
+		return nil, 0, ERROR_MALFORMED_REQUEST_LINE
 	}
 
 	re := &RequestLine{
-		Method:        parts[0],
-		RequestTarget: parts[1],
-		HttpVersion:   parts[2],
+		Method:        string(parts[0]),
+		RequestTarget: string(parts[1]),
+		HttpVersion:   string(parts[2]),
 	}
 
 	if err := re.verifyRequestLine(); err != nil {
-		return nil, restMsg, err
+		return nil, 0, err
 	}
 
-	return re, restMsg, nil
+	return re, noOfBytesParsed, nil
 }
 
 func RequestFromReader(reader io.Reader) (*Request, error) {
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return nil, errors.Join(
-			fmt.Errorf("unable to io.ReadAll"),
-			err,
-		)
+	request := newRequest()
+	// NOTE: Buffer could get overrun... a header that's above 1k could do that or the body
+	buf := make([]byte, 1024)
+	bufLen := 0
+
+	for !request.done() {
+		n, err := reader.Read(buf[bufLen:])
+		// TODO: What to do here?
+		if err != nil {
+			return nil, err
+		}
+		bufLen += n
+		readN, err := request.parse(buf[:bufLen])
+
+		if err != nil {
+			return nil, err
+		}
+		// Remove the already parsed data from buf
+		copy(buf, buf[readN:bufLen])
+		bufLen -= readN
 	}
 
-	rq, _, err := parseRequestLine(string(data))
-	if err != nil {
-		return nil, err
-	}
-
-	return &Request{
-		RequestLine: *rq,
-	}, nil
+	return request, nil
 }
