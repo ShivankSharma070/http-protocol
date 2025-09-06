@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	"github.com/ShivankSharma070/http-protocol/internals/headers"
@@ -15,6 +16,7 @@ const (
 	StateInit   parserState = "init"
 	StateDone   parserState = "done"
 	StateHeader parserState = "header"
+	StateBody   parserState = "body"
 	StateError  parserState = "error"
 )
 
@@ -38,10 +40,31 @@ func (re *RequestLine) verifyRequestLine() error {
 	return nil
 }
 
+func getInt(headers *headers.Headers, name string, defaultValue int) int {
+	valueStr, exists := headers.Get(name)
+	if !exists {
+		return defaultValue
+	}
+
+	valueInt, err := strconv.Atoi(valueStr)
+	if err != nil {
+		return defaultValue
+	}
+
+	return valueInt
+}
+
 type Request struct {
 	RequestLine RequestLine
 	Headers     *headers.Headers
+	Body        string
 	State       parserState
+}
+
+func (r *Request) hasBody() bool {
+	// TODO: When doing chunk encoding update this method
+	length := getInt(r.Headers, "content-length", 0)
+	return length != 0
 }
 
 func (r *Request) parse(data []byte) (int, error) {
@@ -49,6 +72,9 @@ func (r *Request) parse(data []byte) (int, error) {
 outer:
 	for {
 		currentData := data[read:]
+		if len(currentData) == 0 {
+			break outer
+		}
 		switch r.State {
 		case StateError:
 			return 0, ERROR_REQUEST_IN_ERROR_STATE
@@ -79,7 +105,28 @@ outer:
 
 			read += n
 
+			// IRL, we don't need to do this, as there will not be a eof from a connection in irl, so the state will transition from headers to body and then to done.
+			// But here we are doing the transition
 			if done {
+				if r.hasBody() {
+					r.State = StateBody
+				} else {
+					r.State = StateDone
+				}
+			}
+
+		case StateBody:
+			length := getInt(r.Headers, "content-length", 0)
+
+			if length == 0 {
+				panic("chunked not implemented")
+			}
+
+			remaining := min(length-len(r.Body), len(currentData))
+			r.Body += string(currentData[:remaining])
+			read += remaining
+
+			if len(r.Body) == length {
 				r.State = StateDone
 			}
 
