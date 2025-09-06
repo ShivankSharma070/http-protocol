@@ -67,6 +67,10 @@ func main() {
 		fmt.Println("- Target: ", re.RequestLine.RequestTarget)
 		fmt.Println("- Version: ", re.RequestLine.HttpVersion)
 
+		fmt.Println("Request line:")
+		re.Headers.ForEach(func(n, v string) {
+			fmt.Printf("- %s: %s\n", n, v)
+		})
 	}
 
 	listener.Close()
